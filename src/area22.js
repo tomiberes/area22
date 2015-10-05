@@ -12,7 +12,7 @@
   // Codename
   var Area22 = {};
 
-  Area22.VERSION = '0.0.0';
+  Area22.VERSION = '0.0.1';
 
   Area22.area = function(el, opts) {
     return new Area(el, opts);
@@ -130,7 +130,6 @@
     return xy;
   };
 
-  // Get page x/y coordinates
   Coords.getPageXY = function(ev, page) {
     page = page || {};
     Coords.getXY('page', ev, page);
@@ -140,39 +139,63 @@
     };
   };
 
-  Coords.getScrollXY = function() {
+  Coords.getClientXY = function(ev, client) {
+    client = client || {};
+    Coords.getXY('client', ev, client);
     return {
-      x: window.scrollX || document.documentElement.scrollLeft,
-      y: window.scrollY || document.documentElement.scrollTop
+      x: client.x,
+      y: client.y
     };
   };
 
-  // Retrieve element rectangle position and dimensions
-  Coords.getElRect = function(el) {
-    // TODO: check if required (iOS), test on iOS
-    var scroll = /ipad|iphone|ipod/i.test(navigator.userAgent) ? { x: 0, y: 0 } : Coords.getScrollXY(),
-        clientRect = el.getClientRects()[0];
+  Coords.getScroll = function() {
     return {
-      left: clientRect.left + scroll.x,
-      right: clientRect.right + scroll.x,
-      top: clientRect.top + scroll.y,
-      bottom: clientRect.bottom + scroll.y,
-      width: clientRect.width || clientRect.right - clientRect.left,
-      height: clientRect.height || clientRect.bottom - clientRect.top
+      x: window.pageXOffset || document.documentElement.scrollLeft,
+      y: window.pageYOffset || document.documentElement.scrollTop
+    };
+  };
+
+  // Offsets for all parents
+  Coords.getOffset = function(el) {
+    var currLeft = 0;
+    var currTop = 0;
+    while (el.offsetParent) {
+      currLeft += el.offsetLeft;
+      currTop += el.offsetTop;
+      el = el.offsetParent;
+    }
+    return {
+      x: currLeft,
+      y: currTop
+    };
+  };
+
+  // Client rect + scroll
+  Coords.getPosition = function(el) {
+    var rect = el.getBoundingClientRect();
+    var scroll = Coords.getScroll();
+    return {
+      x: rect.left + scroll.x,
+      y: rect.top + scroll.y
     };
   };
 
   // Check whether coordinates are within element
   Coords.checkPosition = function(el, coords) {
-      var horizontal, vertical,
-          rect = Coords.getElRect(el);
+    var horizontal, vertical;
+    // Guard for elements which are not in the DOM
+    try {
+      var rect = el.getBoundingClientRect();
       horizontal = (coords.x > rect.left) && (coords.x < rect.right);
       vertical = (coords.y > rect.top) && (coords.y < rect.bottom);
-      return horizontal && vertical;
+    } catch (err) {
+      return false;
+    }
+    return horizontal && vertical;
   };
 
   Coords.getCenter = function(el) {
-    var rect = Coords.getElRect(el);
+    var rect = el.getBoundingClientRect();
     return {
       x: rect.left + Math.round(rect.width / 2),
       y: rect.top + Math.round(rect.height / 2)
@@ -196,23 +219,18 @@
   };
 
   Util.isFunction = function(obj) {
-    return typeof obj == 'function' || false;
+    return typeof obj === 'function' || false;
   };
 
   // Browser helpers
   var Browser = {};
 
-  Browser.isMac = /Mac OS X/.test(navigator.userAgent);
-  Browser.isIOS = /iP(?:ad|hone|od)/.test(navigator.userAgent);
-
-  Browser.isWebKit = /WebKit\//.test(navigator.userAgent);
-  Browser.isGecko = /Gecko\//.test(navigator.userAgent);
-  Browser.isMSIE = /Trident\//.test(navigator.userAgent);
-
-  // TODO: input type detection
-  Browser.supportMouse = null;
-  Browser.supportTouch = null;
-  Browser.supportPointer = null;
+  Browser.prefixCSS = function(css, webkit, moz, ms) {
+    if (webkit) return Browser.webkitPrefix.concat(css);
+    if (moz) return Browser.geckoPrefix.concat(css);
+    if (ms) return Browser.msiePrefix.concat(css);
+    return css;
+  };
 
   Browser.requestAnimFrame = (function() {
     return window.requestAnimationFrame ||
@@ -225,6 +243,31 @@
       window.webkitCancelAnimationFrame ||
       window.mozCancelAnimationFrame;
   })();
+
+  Browser.isMac = /Mac OS X/.test(navigator.userAgent);
+  Browser.isIOS = /iP(?:ad|hone|od)/.test(navigator.userAgent);
+
+  Browser.isWebKit = /WebKit\//.test(navigator.userAgent);
+  Browser.isGecko = /Gecko\//.test(navigator.userAgent);
+  Browser.isMSIE = /Trident\//.test(navigator.userAgent);
+
+  Browser.webkitPrefix = '-webkit-';
+  Browser.geckoPrefix = '-moz-';
+  Browser.msiePrefix = '-ms-';
+
+  Browser.userSelect = Browser.prefixCSS('user-select',
+    Browser.isWebKit, Browser.isGecko, Browser.isMSIE);
+  Browser.backfaceVisibility = Browser.prefixCSS('backface-visibility',
+    Browser.isWebKit, false, Browser.isMSIE);
+  Browser.perspective = Browser.prefixCSS('perspective',
+    Browser.isWebKit, false, Browser.isMSIE);
+  Browser.transform = Browser.prefixCSS('transform',
+    Browser.isWebKit, false, Browser.isMSIE);
+
+  // TODO: input type detection
+  Browser.supportMouse = null;
+  Browser.supportTouch = null;
+  Browser.supportPointer = null;
 
   // Events mapping
   var EVENTS = {
@@ -279,67 +322,109 @@
     unset: function(prop) {
       delete this._data[prop];
       return this;
-    }
-
+    },
   });
 
   // Area represents an Area for drag operations
   var Area = function(el, opts) {
     Data.apply(this, arguments);
     this.el = el;
-    this.pointerIsDown = false;
     this.draggables = [];
     this.dropzones = [];
-    this.dragged = null;
-    this.dropped = null;
-    this.handleStart = null;
-    this.handleMove = null;
-    this.handleStop = null;
-    this.filterStart = null;
-    this.filterMove = null;
-    this.filterStop = null;
-    this.debug = false;
+    this._pointerIsDown = false;
+    this._dragged = null;
+    this._handleStart = null;
+    this._handleMove = null;
+    this._handleStop = null;
+    this._cache = {};
     this._init(opts);
   };
 
   Util.extend(Area.prototype, Data.prototype, Events, {
 
     _init: function(opts) {
-      if (opts) {
-        if (opts.debug) {
-          this.debug = true;
-          Area22.debug(this);
-        }
+      this.opts = opts || {};
+      // Available opts:
+      // debug: Boolean
+      // noDragClass: String (CSS class)
+      if (this.opts.debug === true) {
+        Area22.debug(this);
       }
-      this.on(EVENTS.pointerMove, this.pointerMove);
-      this.on(EVENTS.pointerUp, this.pointerUp);
+      this.on(EVENTS.pointerDown, this._pointerDown);
+      this.on(EVENTS.pointerMove, this._pointerMove);
+      this.on(EVENTS.pointerUp, this._pointerUp);
+      this.el.style[Browser.userSelect] = 'none';
     },
 
-    // Remove event listeners and destroy associated Draggables/Dropzones
-    destroy: function() {
-      this.removeDraggables();
-      this.removeDropzones();
-      this.off(EVENTS.pointerMove, this.pointerMove);
-      this.off(EVENTS.pointerUp, this.pointerUp);
-      this.data({});
+    _pointerDown: function(ev) {
+      var coords = Coords.getClientXY(ev);
+      this._dragged = this.getDraggable(coords);
+      if (this._dragged && this._dragged.opts.movable && !ev.target.classList.contains(this.opts.noDragClass)) {
+        this._pointerIsDown = true;
+        ev.preventDefault();
+        if (this.opts.debug) Area.log({ type: 'event',  event: ev.type });
+        var dropzone = this.getDropzone(coords);
+        this._dragged.setCoords(coords).drag();
+        if (this._handleStart) {
+          this._handleStart.call(window, coords, this._dragged, dropzone,
+            this.dropzones);
+        }
+      }
+    },
+
+    _pointerMove: function(ev) {
+      if (this._pointerIsDown && this._dragged) {
+        if (this.opts.debug) Area22.log({ type: 'event',  event: ev.type });
+        var coords = Coords.getClientXY(ev);
+        var dropzone = this.getDropzone(coords);
+        this._dragged.setCoords(coords);
+        if (this._handleMove) {
+          this._handleMove.call(window, coords, this._dragged, dropzone,
+            this.dropzones);
+        }
+      }
+    },
+
+    _pointerUp: function(ev) {
+      this._pointerIsDown = false;
+      if (this._dragged && this._dragged.opts.movable && !ev.target.classList.contains(this.opts.noDragClass)) {
+        if (this.opts.debug) Area22.log({ type: 'event',  event: ev.type });
+        var coords = Coords.getClientXY(ev);
+        var dropzone = this.getDropzone(coords);
+        this._dragged.setCoords(coords).drop();
+        if (this._handleStop) {
+          this._handleStop.call(window, coords, this._dragged, dropzone,
+            this.dropzones);
+        }
+      }
+      this._dragged = null;
     },
 
     // Make element Draggable, with optional starting coords
-    addDraggable: function(el, coords) {
+    addDraggable: function(el, opts) {
       if (!el) return;
-      var draggable = new Draggable(el, coords, this);
+      var draggable = new Draggable(el, this, opts);
       this.draggables.push(draggable);
       return draggable;
     },
 
     // Add more Draggables at once using CSS selector
-    addDraggables: function(selector) {
+    addDraggables: function(selector, opts) {
       if (!selector) return this.draggables;
       var elements = document.querySelectorAll(selector);
       for (var i = 0; i < elements.length; i++) {
-        this.addDraggable(elements[i]);
+        this.addDraggable(elements[i], opts);
       }
       return this.draggables;
+    },
+
+    removeDraggable: function(draggable) {
+      for (var i = 0; i < this.draggables.length; i++) {
+        if (this.draggables[i] === draggable) {
+          this.draggables.splice(i, 1);
+          draggable.destroy();
+        }
+      }
     },
 
     // Remove all associated draggables at once
@@ -350,22 +435,31 @@
       this.draggables = [];
     },
 
-    // Make element Dropzone, with optional active flag
-    addDropzone: function(el, active) {
+    // Make element Dropzone
+    addDropzone: function(el, opts) {
       if (!el) return;
-      var dropzone = new Dropzone(el, active, this);
+      var dropzone = new Dropzone(el, this, opts);
       this.dropzones.push(dropzone);
       return dropzone;
     },
 
     // Add more Dropzones at once using CSS selector
-    addDropzones: function(selector) {
+    addDropzones: function(selector, opts) {
       if (!selector) return dropzones;
       var elements = document.querySelectorAll(selector);
       for (var i = 0; i < elements.length; i++) {
-        this.addDropzone(elements[i]);
+        this.addDropzone(elements[i], opts);
       }
       return this.dropzones;
+    },
+
+    removeDropzone: function(dropzone) {
+      for (var i = 0; i < this.dropzones.length; i++) {
+        if (this.dropzones[i] === dropzone) {
+          this.dropzones.splice(i, 1);
+          dropzone.destroy();
+        }
+      }
     },
 
     // Remove all associated dropzones at once
@@ -376,287 +470,233 @@
       this.dropzones = [];
     },
 
-    // Apply dropzones filter or return all associated dropzones
-    filterDropzones: function(filter) {
-      if (Util.isFunction(filter)) {
-        return filter.call(this, this.dropzones);
-      } else {
-        return this.dropzones;
+    // Get draggable for the current cursor position, ignore currently dragged
+    getDraggable: function(coords) {
+      for (var i = 0; i < this.draggables.length; i++) {
+        if (Coords.checkPosition(this.draggables[i].el, coords) &&
+            this.draggables[i] !== this._dragged) {
+          return this.draggables[i];
+        }
       }
+      return null;
     },
 
-    // Return first (the only) dropzone according to the pointer location
+    // Return dropzone according to the pointer location
     getDropzone: function(coords) {
       for (var i = 0; i < this.dropzones.length; i++) {
-        if (this.dropzones[i].pointed(coords)) {
+        if (Coords.checkPosition(this.dropzones[i].el, coords)) {
           return this.dropzones[i];
         }
       }
+      return null;
     },
 
-    // Assign handler and filter for movement start operation
-    onStart: function(opts) {
-      if (opts) {
-        if (Util.isFunction(opts.handler)) this.handleStart = opts.handler;
-        if (Util.isFunction(opts.filter)) this.filterStart = opts.filter;
-      }
+    onStart: function(fn) {
+      if (Util.isFunction(fn)) this._handleStart = fn;
       return this;
     },
 
-    // Assign handler and filter for movement move operation
-    onMove: function(opts) {
-      if (opts) {
-        if (Util.isFunction(opts.handler)) this.handleMove = opts.handler;
-        if (Util.isFunction(opts.filter)) this.filterMove = opts.filter;
-      }
+    onMove: function(fn) {
+      if (Util.isFunction(fn)) this._handleMove = fn;
       return this;
     },
 
-    // Assign handler and filter for movement stop operation
-    onStop: function(opts) {
-      if (opts) {
-        if (Util.isFunction(opts.handler)) this.handleStop = opts.handler;
-        if (Util.isFunction(opts.filter)) this.filterStop = opts.filter;
-      }
+    onStop: function(fn) {
+      if (Util.isFunction(fn)) this._handleStop = fn;
       return this;
     },
 
-    // Get event coords, Draggable/Dropzones on start and invoke handler
-    doStart: function(ev) {
-      var coords = Coords.getPageXY(ev),
-          dropzone = this.getDropzone(coords) || null,
-          dropzones = this.filterDropzones(this.filterStart);
-      // Default action
-      this.dragged.setCoords(coords).startAnimLoop();
-      if (Util.isFunction(this.handleStart)) {
-        return this.handleStart.call(this, coords, this.dragged, dropzone, dropzones);
-      }
+    destroy: function() {
+      this.removeDraggables();
+      this.removeDropzones();
+      this.off(EVENTS.pointerDown, this.pointerDown);
+      this.off(EVENTS.pointerMove, this.pointerMove);
+      this.off(EVENTS.pointerUp, this.pointerUp);
+      this.data({});
     },
-
-    // Get event coords, Draggable/Dropzones during movemnt and invoke handler
-    doMove: function(ev) {
-      var coords = Coords.getPageXY(ev),
-          dropzone = this.getDropzone(coords) || null,
-          dropzones = this.filterDropzones(this.filterMove);
-      // Default action
-      this.dragged.setCoords(coords);
-      if (Util.isFunction(this.handleMove)) {
-        return this.handleMove.call(this, coords, this.dragged, dropzone, dropzones);
-      }
-    },
-
-    // Get event coords, Draggable/Dropzones on stop and invoke handler
-    doStop: function(ev) {
-      var coords = Coords.getPageXY(ev),
-          dropzone = this.getDropzone(coords) || null,
-          dropzones = this.filterDropzones(this.filterStop);
-      // Default action;
-      this.dragged.setCoords(coords).stopAnimLoop().pointer();
-      // Set new home
-      this.dragged.dropzone = dropzone;
-      if (Util.isFunction(this.handleStop)) {
-        return this.handleStop.call(this, coords, this.dragged, dropzone, dropzones);
-      }
-    },
-
-    // Event handlers
-
-    pointerDown: function(ev, dragged) {
-      if (this.debug) Area22.log({ type: 'event',  event: ev.type });
-      ev.preventDefault();
-      this.pointerIsDown = true;
-      this.dragged = dragged;
-      this.doStart(ev);
-    },
-
-    pointerMove: function(ev) {
-      if (this.debug) Area22.log({ type: 'event',  event: ev.type });
-      if (!this.pointerIsDown) return;
-      if (this.dragged) {
-        this.doMove(ev);
-      }
-      return false;
-    },
-
-    pointerUp: function(ev) {
-      if (this.debug) Area22.log({ type: 'event',  event: ev.type });
-      this.pointerIsDown = false;
-      if (this.dragged) {
-        this.doStop(ev);
-      }
-      // Reset currently dragged element
-      this.dragged = null;
-      return false;
-    },
-
   });
 
   // Draggable represents movable element
-  var Draggable = function(el, coords, area) {
+  var Draggable = function(el, area, opts) {
     Data.apply(this, arguments);
     this.el = el;
     this.area = area;
-    this.dropzone = null;
-    this.currCoords = coords || null;
-    this.prevCoords = null;
-    this.pointerDelta = null;
+    this._currCoords = null;
+    this._prevCoords = null;
+    this._pointerDelta = null;
     this._afrid = null; // Animation frame request ID
-    this._init();
+    this._cache = {};
+    this._init(opts);
   };
 
-  Util.extend(Draggable.prototype, Data.prototype, Events, {
+  Util.extend(Draggable.prototype, Data.prototype, {
 
-    _init: function() {
-      this.on(EVENTS.pointerDown, this.pointerDown);
-      // Draggable have to be absolutely positioned
-      this.el.style.position = 'absolute';
-      if (this.currCoords) this.applyPosition();
+    _init: function(opts) {
+      this.opts = opts || {};
+      // Available opts:
+      // movable: Boolean (whether this draggable should be dragged)
+      if (this.opts.movable !== false) {
+        this.opts.movable = true;
+      }
     },
 
-    // Remove event listeners
-    destroy: function() {
-      this.off(EVENTS.pointerDown, this.pointerDown);
-      this.data({});
-    },
-
-    // Set new set of coordinates for Draggable
-    setCoords: function(coords) {
-      this.currCoords = {
-        x: parseInt(coords.x),
-        y: parseInt(coords.y)
-      };
-      if (this.area.debug) Area22.log({ type: 'coords',  coords: this.currCoords });
+    // Calculate current delta from curr/prev position, or reset the delta
+    _calculateDelta: function(reset) {
+      if (!this._prevCoords || reset) {
+        this._pointerDelta = { x: 0, y: 0 };
+      } else {
+        this._pointerDelta = {
+          x: parseInt(this._pointerDelta.x + (this._currCoords.x - this._prevCoords.x)),
+          y: parseInt(this._pointerDelta.y + (this._currCoords.y - this._prevCoords.y))
+        };
+      }
+      if (this.area.opts.debug) Area22.log({ type: 'delta',  delta: this._pointerDelta });
+      this._prevCoords = this._currCoords;
       return this;
     },
 
     // Position Draggable using deltas during movement using CSS transform
-    translateElPosition: function() {
+    _transformPosition: function() {
+      var scroll = Coords.getScroll();
+      var offset = Coords.getOffset(this.el);
+      // Always check for scroll change
+      var scrollDiff = {
+        x: this._cache.startScroll.x - scroll.x,
+        y: this._cache.startScroll.y - scroll.y
+      };
+      // Always check for element offset change
+      var offsetDiff = {
+        x: this._cache.startOffset.x - offset.x,
+        y: this._cache.startOffset.y - offset.y
+      };
+      var x = this._pointerDelta.x + offsetDiff.x - scrollDiff.x;
+      var y = this._pointerDelta.y + offsetDiff.y - scrollDiff.y;
       // backface-visibility & perspective are used to force GPU acceleration
-      var transform = 'translate3d(' + this.pointerDelta.x + 'px,' + this.pointerDelta.y + 'px,0)',
-          perspective = '1000',
-          backfaceVisibility = 'hidden';
-      if (Browser.isWebKit) {
-        this.el.style.webkitBackfaceVisibility = backfaceVisibility;
-        this.el.style.webkitPerspective = perspective;
-        this.el.style.webkitTransform = transform;
-      } else {
-        this.el.style.backfaceVisibility = backfaceVisibility;
-        this.el.style.perspective = perspective;
-        this.el.style.transform = transform;
-      }
+      this.el.style[Browser.backfaceVisibility] = 'hidden';
+      this.el.style[Browser.perspective] = '1000';
+      this.el.style[Browser.transform] = 'translate3d(' + x + 'px,' + y + 'px,0)';
       return this;
     },
 
-    // Position Draggable persistently on current coords
-    absoluteElPosition: function() {
-      if (this.area.debug) Area22.log({ type: 'position',  position: this.currCoords });
-      this.el.style.left = this.currCoords.x + 'px';
-      this.el.style.top = this.currCoords.y + 'px';
-      this.prevCoords = null;
+    // Cleanup movement properties
+    _applyPosition: function() {
+      if (this.area.opts.debug) Area22.log({ type: 'position',  position: this._currCoords });
+      this._prevCoords = null;
+      this._cache.startScroll = null;
+      this._cache.startOffset = null;
+      this.el.style[Browser.backfaceVisibility] = '';
+      this.el.style[Browser.perspective] = '';
+      this.el.style[Browser.transform] = '';
       return this;
     },
 
-    // Calculate current delta from curr/prev position, or reset the delta
-    calculateDelta: function(reset) {
-      if (!this.prevCoords || reset) {
-        this.pointerDelta = { x: 0, y: 0 };
-      } else {
-        this.pointerDelta = {
-          x: parseInt(this.pointerDelta.x + (this.currCoords.x - this.prevCoords.x)),
-          y: parseInt(this.pointerDelta.y + (this.currCoords.y - this.prevCoords.y))
-        };
-      }
-      if (this.area.debug) Area22.log({ type: 'delta',  delta: this.pointerDelta });
-      this.prevCoords = this.currCoords;
+    getCoords: function() {
+      return this._currCoords;
+    },
+
+    setCoords: function(coords) {
+      this._currCoords = {
+        x: parseInt(coords.x),
+        y: parseInt(coords.y)
+      };
+      if (this.area.opts.debug) Area22.log({ type: 'coords',  coords: this._currCoords });
       return this;
     },
 
-    // Move Draggable using latest coordinates,
-    // invoked in requestAnimationFrame loop
+    drag: function() {
+      // Cache scroll and offset for correct delta calculation during movement
+      this._cache.startScroll = Coords.getScroll();
+      this._cache.startOffset = Coords.getOffset(this.el);
+      this.move();
+      return this;
+    },
+
     move: function() {
-      this.calculateDelta()
-        .translateElPosition();
-      return this;
-    },
-
-    // Apply current coordinates position
-    applyPosition: function() {
-      this.calculateDelta(true) // Reset pointer delta and apply it
-        .translateElPosition()
-        .absoluteElPosition(); // Position element using style.left/top
-      return this;
-    },
-
-    // Place Draggable using latest pointer coordinates
-    pointer: function() {
-      var rect = Coords.getElRect(this.el);
-      this.setCoords({
-        x: this.currCoords.x - (this.currCoords.x - rect.left),
-        y: this.currCoords.y - (this.currCoords.y - rect.top)
-      }).applyPosition();
-      return this;
-    },
-
-    // Place Draggable center to the coordinates
-    place: function(coords) {
-      var rect = Coords.getElRect(this.el);
-      this.setCoords({
-        x: coords.x - Math.round(rect.width / 2),
-        y: coords.y - Math.round(rect.height / 2)
-      }).applyPosition();
-      return this;
-    },
-
-    // Snap draggable into element center
-    snap: function(el) {
-      this.place(Coords.getCenter(el));
-      return this;
-    },
-
-    startAnimLoop: function() {
       var self = this;
-      self.move();
-      // Native requestAnimationFrame function to work properly,
-      // it have to be executed in the context of window object
+      self._calculateDelta()._transformPosition();
       self._afrid = Browser.requestAnimFrame.call(window, function() {
-        self.startAnimLoop();
+        self.move();
       });
+      return self;
+    },
+
+    drop: function() {
+      this._applyPosition();
+      Browser.cancelAnimFrame.call(window, this._afrid);
       return this;
     },
-
-    stopAnimLoop: function() {
-      var self = this;
-      Browser.cancelAnimFrame.call(window, self._afrid);
-      return this;
-    },
-
-    // Event handler, passing it directly to Area handler,
-    // with dragged object reference
-    pointerDown: function(ev) {
-      return this.area.pointerDown(ev, this);
-    },
-
-  });
-
-  // Dropzone represents possible drop location
-  var Dropzone = function(el, active, area) {
-    Data.apply(this, arguments);
-    this.el = el;
-    this.area = area;
-    this.active = active || true;
-  };
-
-  Util.extend(Dropzone.prototype, Data.prototype, {
 
     destroy: function() {
       this.data({});
     },
+  });
 
-    // Check whether the pointer is over the Dropzone
-    pointed: function(coords) {
-      return Coords.checkPosition(this.el, coords);
+
+  // Sortable helper methods
+  Util.extend(Draggable.prototype, {
+
+    _shadow: null,
+
+    getShadow: function() {
+      return this._shadow;
     },
 
+    setShadow: function(el) {
+      this._shadow = el || this.el.cloneNode(true);
+    },
+
+    detachShadow: function() {
+      var parent = this._shadow.parentNode;
+      if (parent) {
+        parent.removeChild(this._shadow);
+      }
+    },
+
+    removeShadow: function () {
+      this.detachShadow();
+      this._shadow = null;
+    },
+
+    placeShadow: function (coords, dragged, dropzone) {
+      var shadow = this.getShadow();
+      var parent = this._shadow.parentNode;
+      var over = this.area.getDraggable(coords);
+      var overSelf = Coords.checkPosition(shadow, coords);
+      if (dropzone) {
+        if (over && !overSelf) {
+          var rect = over.el.getBoundingClientRect();
+          // TODO: horizontal, only vertical now
+          if (rect.top + (rect.height / 2) <= coords.y) {
+            dropzone.el.insertBefore(shadow, over.el.nextElementSibling);
+          } else {
+            dropzone.el.insertBefore(shadow, over.el);
+          }
+        } else if (!dropzone.el.contains(shadow)) {
+          dropzone.el.appendChild(shadow);
+        }
+      } else {
+        this.detachShadow();
+      }
+    }
+  });
+
+  // Dropzone represents possible drop location
+  var Dropzone = function(el, area, opts) {
+    Data.apply(this, arguments);
+    this.el = el;
+    this.area = area;
+    this._init(opts);
+  };
+
+  Util.extend(Dropzone.prototype, Data.prototype, {
+
+    _init: function (opts) {
+      this.opts = opts || {};
+    },
+
+    destroy: function() {
+      this.data({});
+    },
   });
 
   return Area22;

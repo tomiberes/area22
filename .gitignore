@@ -2,6 +2,3 @@
 
 npm-debug.log
 node_modules
-client/build
-client/test/build
-report/.~lock.Report.odt#
