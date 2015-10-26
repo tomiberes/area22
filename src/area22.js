@@ -225,11 +225,14 @@
   // Browser helpers
   var Browser = {};
 
-  Browser.prefixCSS = function(css, webkit, moz, ms) {
-    if (webkit) return Browser.webkitPrefix.concat(css);
-    if (moz) return Browser.geckoPrefix.concat(css);
-    if (ms) return Browser.msiePrefix.concat(css);
-    return css;
+  Browser.prefixCSS = function (cssProp, webkit, moz, ms) {
+    function capitalize(string) {
+      return string.charAt(0).toUpperCase() + string.slice(1);
+    }
+    if (moz) return Browser.geckoPrefix.concat(capitalize(cssProp));
+    if (ms) return Browser.msiePrefix.concat(capitalize(cssProp));
+    if (webkit) return Browser.webkitPrefix.concat(capitalize(cssProp));
+    return cssProp;
   };
 
   Browser.requestAnimFrame = (function() {
@@ -251,18 +254,18 @@
   Browser.isGecko = /Gecko\//.test(navigator.userAgent);
   Browser.isMSIE = /Trident\//.test(navigator.userAgent);
 
-  Browser.webkitPrefix = '-webkit-';
-  Browser.geckoPrefix = '-moz-';
-  Browser.msiePrefix = '-ms-';
+  Browser.geckoPrefix = 'Moz';
+  Browser.msiePrefix = 'ms';
+  Browser.webkitPrefix = 'webkit';
 
-  Browser.userSelect = Browser.prefixCSS('user-select',
+  Browser.userSelect = Browser.prefixCSS('userSelect', Browser.isWebKit,
+    Browser.isGecko, Browser.isMSIE);
+  Browser.backfaceVisibility = Browser.prefixCSS('backfaceVisibility',
     Browser.isWebKit, Browser.isGecko, Browser.isMSIE);
-  Browser.backfaceVisibility = Browser.prefixCSS('backface-visibility',
-    Browser.isWebKit, false, Browser.isMSIE);
-  Browser.perspective = Browser.prefixCSS('perspective',
-    Browser.isWebKit, false, Browser.isMSIE);
-  Browser.transform = Browser.prefixCSS('transform',
-    Browser.isWebKit, false, Browser.isMSIE);
+  Browser.perspective = Browser.prefixCSS('perspective', Browser.isWebKit,
+    false, Browser.isMSIE);
+  Browser.transform = Browser.prefixCSS('transform', Browser.isWebKit,
+    false, Browser.isMSIE);
 
   // TODO: input type detection
   Browser.supportMouse = null;
@@ -336,6 +339,7 @@
     this._handleStart = null;
     this._handleMove = null;
     this._handleStop = null;
+    this._handleCancel = null;
     this._cache = {};
     this._init(opts);
   };
@@ -394,6 +398,20 @@
         this._dragged.setCoords(coords).drop();
         if (this._handleStop) {
           this._handleStop.call(window, coords, this._dragged, dropzone,
+            this.dropzones);
+        }
+      }
+      this._dragged = null;
+    },
+
+    cancelDrag: function(ev) {
+      this._pointerIsDown = false;
+      if (this._dragged && this._dragged.opts.movable) {
+        var coords = this._dragged.getCoords();
+        var dropzone = this.getDropzone(coords);
+        this._dragged.setCoords(coords).drop();
+        if (this._handleCancel) {
+          this._handleCancel.call(window, coords, this._dragged, dropzone,
             this.dropzones);
         }
       }
@@ -503,6 +521,11 @@
 
     onStop: function(fn) {
       if (Util.isFunction(fn)) this._handleStop = fn;
+      return this;
+    },
+
+    onCancel: function (fn) {
+      if (Util.isFunction(fn)) this._handleCancel = fn;
       return this;
     },
 
