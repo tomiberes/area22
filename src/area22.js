@@ -361,9 +361,10 @@
     },
 
     _pointerDown: function(ev) {
+      if (ev.target.classList.contains(this.opts.noDragClass)) return;
       var coords = Coords.getClientXY(ev);
       this._dragged = this.getDraggable(coords);
-      if (this._dragged && this._dragged.opts.movable && !ev.target.classList.contains(this.opts.noDragClass)) {
+      if (this._dragged && this._dragged.opts.movable) {
         this._pointerIsDown = true;
         ev.preventDefault();
         if (this.opts.debug) Area.log({ type: 'event',  event: ev.type });
@@ -391,7 +392,7 @@
 
     _pointerUp: function(ev) {
       this._pointerIsDown = false;
-      if (this._dragged && this._dragged.opts.movable && !ev.target.classList.contains(this.opts.noDragClass)) {
+      if (this._dragged && this._dragged.opts.movable) {
         if (this.opts.debug) Area22.log({ type: 'event',  event: ev.type });
         var coords = Coords.getClientXY(ev);
         var dropzone = this.getDropzone(coords);
